@@ -174,21 +174,10 @@ def main():
     logger.info("=== MILITARY-GRADE SFTP DOWNLOADER ===")
     engine = MilitaryGradeSFTP()
     last_error = None
-
-    def extract_date(file_name):
-        digits = ''.join(filter(str.isdigit, file_name))
-        return digits if len(digits) == 8 else None
-
-    def get_yesterday_date_str():
-        from datetime import datetime, timedelta
-        yesterday = datetime.now() - timedelta(days=1)
-        return yesterday.strftime('%Y%m%d')
-
-    yesterday_str = get_yesterday_date_str()
-
-    while True:
+    
+    for attempt in range(MAX_RETRIES):
         try:
-            logger.info("Starting new download cycle")
+            logger.info(f"Attempt {attempt + 1} of {MAX_RETRIES}")
             engine.connect()
 
             # Read last downloaded date from last_file.txt
@@ -196,19 +185,20 @@ def main():
             if LAST_FILE_RECORD.exists():
                 with open(LAST_FILE_RECORD, 'r') as f:
                     last_file_name = f.read().strip()
-                    last_date_str = extract_date(last_file_name)
+                    # Extract date part from filename, assuming format like '20250421.IPI'
+                    last_date_str = ''.join(filter(str.isdigit, last_file_name))
             else:
                 last_date_str = None
-
-            if last_date_str == yesterday_str:
-                logger.info(f"Reached target date {yesterday_str}. Exiting loop.")
-                break
 
             # List files and filter by date after last_date_str
             files = [f for f in engine.sftp.listdir() if 'IPI' in f]
             if not files:
                 logger.error("No matching files found")
-                break
+                return
+
+            def extract_date(file_name):
+                digits = ''.join(filter(str.isdigit, file_name))
+                return digits if len(digits) == 8 else None
 
             filtered_files = []
             for f in files:
@@ -218,7 +208,7 @@ def main():
 
             if not filtered_files:
                 logger.info("No new files to download after last_file.txt date")
-                break
+                return
 
             # Select earliest file after last_date_str
             remote_file = min(filtered_files, key=lambda x: extract_date(x))
@@ -231,7 +221,7 @@ def main():
                 # Update last downloaded file record
                 with open(LAST_FILE_RECORD, 'w') as f:
                     f.write(remote_file)
-                logger.info(f"Downloaded and updated last file to {remote_file}")
+                logger.info("Mission accomplished")
                 # Sync to server directory
                 try:
                     os.makedirs(SERVER_DIR, exist_ok=True)
@@ -240,22 +230,21 @@ def main():
                     logger.info(f"Synced {remote_file} to server directory {SERVER_DIR}")
                 except Exception as e:
                     logger.error(f"Failed to sync to server directory: {str(e)}")
-            else:
-                logger.error("Download failed, stopping loop")
-                break
-
-            # Small delay before next cycle to avoid rapid looping
-            time.sleep(5)
-
+                return
+                
         except Exception as e:
             last_error = str(e)
-            logger.error(f"Download cycle failed: {last_error}")
-            # Optional: add retry/backoff logic here if desired
-            break
+            logger.error(f"Attempt {attempt + 1} failed: {last_error}")
+            
+            if attempt < MAX_RETRIES - 1:
+                delay = RETRY_BACKOFF[attempt]
+                logger.info(f"Countermeasure: Retrying in {delay} seconds...")
+                time.sleep(delay)
         finally:
             engine.close()
-
-    logger.info("Download loop ended")
+    
+    logger.error(f"OPERATION FAILED: {last_error}")
+    # Add your email notification here
 
 if __name__ == "__main__":
     main()
